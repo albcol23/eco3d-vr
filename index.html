@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#120a17">
+<title>Eco 3D VR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* VOICE: clinical, tender, quiet
+   IDEA: an ultrasound console screen at night, lit by its own image
+   PICTURE: the rendered volume itself, full bleed, stereo in the headset
+   COLOUR and TYPE: plum-black ground, lilac key light, aqua rim; Inter Tight + Inter
+   LAYOUT: canvas fills the screen, one slim control band at the bottom */
+:root{color-scheme:dark;--bg:#120a17;--ink:#f1eaf8;--dim:#b9a9c9;--lil:#c9a7ff;--aq:#7fe3d3;--line:rgba(201,167,255,.32)}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:15px/1.45 Inter,system-ui,sans-serif;overflow:hidden;-webkit-tap-highlight-color:transparent}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.top{position:fixed;top:0;left:0;padding:calc(12px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-left)) 0;pointer-events:none}
+.top h1{margin:0;font:300 26px/1.05 "Inter Tight",Inter,sans-serif;letter-spacing:-.01em}
+.top p{margin:4px 0 0;color:var(--dim);font-size:13px}
+#ui{position:fixed;left:0;right:0;bottom:0;padding:28px max(16px,env(safe-area-inset-left)) calc(14px + env(safe-area-inset-bottom));background:linear-gradient(rgba(18,10,23,0),rgba(18,10,23,.94) 40%);display:grid;gap:10px;transition:opacity .25s}
+#ui.off{opacity:0;pointer-events:none}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,.btn,select{min-height:44px;border-radius:22px;border:1px solid var(--line);background:rgba(38,22,50,.78);color:var(--ink);font:500 15px Inter,sans-serif;padding:0 16px;cursor:pointer;display:inline-flex;align-items:center}
+select{padding-right:10px}
+button:focus-visible,select:focus-visible,.btn:focus-within,input:focus-visible{outline:2px solid var(--aq);outline-offset:2px}
+button.primary{background:var(--lil);color:#1a0f22;border-color:transparent}
+button.on{border-color:var(--aq);color:var(--aq)}
+label.sl{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:13px;min-height:44px}
+input[type=range]{accent-color:var(--aq);width:120px;height:28px}
+.note{margin:0;color:var(--dim);font-size:13px}
+#status{color:var(--aq)}
+.hide{display:none!important}
+#load{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:5;font:300 20px "Inter Tight",sans-serif;text-align:center;padding:24px}
+#load small{display:block;margin-top:8px;color:var(--dim);font:13px Inter,sans-serif}
+#bExit{position:fixed;top:calc(8px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:4;opacity:.55;min-height:40px}
+#mid{position:fixed;top:0;bottom:0;left:50%;width:2px;margin-left:-1px;background:rgba(127,227,211,.25);pointer-events:none}
+#portrait{position:fixed;inset:0;display:grid;place-items:center;text-align:center;padding:32px;background:rgba(18,10,23,.92);font:300 22px/1.3 "Inter Tight",sans-serif;z-index:6}
+body.vr .top,body.vr #ui{display:none}
+@media(max-width:600px){input[type=range]{width:96px}.top h1{font-size:22px}}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"}}</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="top"><h1>Eco 3D · VR</h1><p>Volume rendering cinematico · vista stereoscopica · controllo con la testa</p></div>
+
+<div id="ui">
+  <div class="row">
+    <button id="bVR" class="primary">Visore Cardboard</button>
+    <button id="bXR" class="hide">WebXR</button>
+    <button id="bStereo">Stereo: off</button>
+    <button id="bAuto">Auto-rotazione</button>
+    <button id="bHead" class="on">Testa: on</button>
+    <label class="btn" id="lFile">Carica .nrrd<input id="file" type="file" accept=".nrrd,.nhdr,.raw,.bin" hidden></label>
+    <button id="bOrient">Orienta volume</button>
+    <button id="bDemo">Volume demo</button>
+  </div>
+  <div class="row">
+    <label class="sl">Soglia <input id="iso" type="range" min="0.05" max="0.9" step="0.01" value="0.38"></label>
+    <label class="sl">Luce <input id="expo" type="range" min="0.5" max="2" step="0.02" value="0.95"></label>
+    <label class="sl">Distanza <input id="dist" type="range" min="0.8" max="3" step="0.05" value="1.35"></label>
+    <select id="pal" aria-label="Tinta"></select>
+    <select id="light" aria-label="Posizione luce"></select>
+    <select id="clip" aria-label="Taglio"></select>
+    <select id="qual" aria-label="Qualità">
+      <option value="auto">Qualità auto</option><option value="alta">Alta</option><option value="media">Media</option><option value="bassa">Bassa</option>
+    </select>
+  </div>
+  <p class="note"><span id="status">Avvio…</span> · Volume demo: feto sintetico generato in modo procedurale, non è un dato clinico. Tocca l'immagine per nascondere i comandi.</p>
+</div>
+
+<div id="load"><div>Genero il volume <span id="pct">0%</span><small>raymarching su texture 3D · three.js</small></div></div>
+<button id="bExit" class="hide">Esci dalla VR</button>
+<div id="mid" class="hide"></div>
+<div id="portrait" class="hide">Ruota il telefono in orizzontale<br>e inseriscilo nel visore</div>
+
+<script type="module">
+import * as THREE from 'three';
+const $ = id => document.getElementById(id);
+const V3 = THREE.Vector3;
+const status = t => { $('status').textContent = t; };
+
+try {
+/* ---------- renderer / scena ---------- */
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setClearColor(0x120a17, 1);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
+renderer.xr.setFramebufferScaleFactor(0.8);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.05, 60);
+scene.add(camera);
+const stereoCam = new THREE.StereoCamera(); stereoCam.eyeSep = 0.064;
+
+// sfondo: cupola sfumata prugna → verde acqua scuro
+const bg = new THREE.Mesh(new THREE.SphereGeometry(30, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  vertexShader: `varying vec3 vP; void main(){ vP=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 vP; void main(){ float y=vP.y;
+    vec3 c=mix(vec3(.085,.05,.11),vec3(.05,.03,.075),smoothstep(0.,.9,y));
+    c=mix(c,vec3(.02,.06,.065),smoothstep(0.,-.9,y));
+    gl_FragColor=vec4(pow(c,vec3(.95)),1.); }`
+}));
+bg.renderOrder = -10; scene.add(bg);
+
+// pulviscolo: aiuta la percezione di profondità in stereo
+{
+  const n = 420, pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const r = 1.2 + Math.random() * 5, th = Math.random() * 6.283, ph = Math.acos(Math.random() * 2 - 1);
+    pos.set([r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph) * .6, r * Math.sin(ph) * Math.sin(th)], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0xb59be0, size: .012, transparent: true, opacity: .55, depthWrite: false })));
+}
+
+/* ---------- materiale volume ---------- */
+const U = {
+  uVol: { value: null }, uIso: { value: .38 }, uSteps: { value: 160 }, uDens: { value: .8 }, uExpo: { value: .95 },
+  uL: { value: new V3() }, uR: { value: new V3() }, uKeyC: { value: new V3() }, uRimC: { value: new V3() },
+  uAlb: { value: new V3() }, uAmbTop: { value: new V3() }, uAmbBot: { value: new V3() }, uSss: { value: new V3() },
+  uClip: { value: new THREE.Vector4(0, 0, 1, 9) }, uTexel: { value: new V3(1 / 112, 1 / 112, 1 / 112) }
+};
+const volMat = new THREE.ShaderMaterial({
+  glslVersion: THREE.GLSL3, uniforms: U, side: THREE.BackSide, transparent: true, depthWrite: false,
+  vertexShader: `
+    out vec3 vOrigin; out vec3 vDir;
+    void main(){
+      vOrigin=(inverse(modelMatrix)*vec4(cameraPosition,1.)).xyz;
+      vDir=position-vOrigin;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
+    }`,
+  fragmentShader: `
+    precision highp float; precision highp sampler3D;
+    uniform sampler3D uVol; uniform float uIso,uSteps,uDens,uExpo;
+    uniform vec3 uL,uR,uKeyC,uRimC,uAlb,uAmbTop,uAmbBot,uSss,uTexel; uniform vec4 uClip;
+    in vec3 vOrigin; in vec3 vDir; out vec4 outColor;
+    float S(vec3 p){ return dot(p,uClip.xyz)>uClip.w ? 0. : texture(uVol,p+.5).r; }
+    vec2 hitBox(vec3 o,vec3 d){ vec3 iv=1./d; vec3 a=(vec3(-.5)-o)*iv, b=(vec3(.5)-o)*iv;
+      vec3 mn=min(a,b), mx=max(a,b); return vec2(max(max(mn.x,mn.y),mn.z), min(min(mx.x,mx.y),mx.z)); }
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453); }
+    vec3 aces(vec3 x){ return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.); }
+    vec3 outc(vec3 c){ return pow(aces(c*uExpo),vec3(1./2.2)); }
+    float occ(vec3 p){ return smoothstep(uIso*.55,uIso*1.35,S(p)); }
+    void main(){
+      vec3 rd=normalize(vDir); vec2 bx=hitBox(vOrigin,rd);
+      if(bx.x>bx.y) discard; bx.x=max(bx.x,0.);
+      float dt=1.7320508/uSteps, t=bx.x+dt*hash(gl_FragCoord.xy), haze=0.; bool hit=false;
+      for(int i=0;i<512;i++){
+        if(t>bx.y) break;
+        float d=S(vOrigin+rd*t);
+        if(d>uIso){ hit=true; break; }
+        haze+=d*d; t+=dt;
+      }
+      haze*=dt*uDens*3.;
+      vec3 hz=mix(uRimC,uKeyC,.45)*haze;
+      if(!hit){ if(haze<.003) discard; outColor=vec4(outc(hz),clamp(haze*2.,0.,.7)); return; }
+      // raffinamento della superficie (bisezione)
+      float a=t-dt, c=t;
+      for(int i=0;i<6;i++){ float m=.5*(a+c); if(S(vOrigin+rd*m)>uIso) c=m; else a=m; }
+      vec3 p=vOrigin+rd*c, e=uTexel*1.2;
+      vec3 g=vec3(S(p+vec3(e.x,0,0))-S(p-vec3(e.x,0,0)), S(p+vec3(0,e.y,0))-S(p-vec3(0,e.y,0)), S(p+vec3(0,0,e.z))-S(p-vec3(0,0,e.z)));
+      vec3 n=-g/max(length(g),1e-5); if(dot(n,rd)>0.) n=-n;
+      vec3 L=normalize(uL), Rl=normalize(uR), V=-rd;
+      float ndl=dot(n,L), dif=max(ndl,0.), wrp=max((ndl+.45)/1.45,0.);
+      // ombra morbida verso la luce principale
+      float sh=0.; vec3 q=p+n*uTexel.x*2.;
+      for(int i=1;i<=18;i++) sh+=occ(q+L*(float(i)*.022));
+      float vis=exp(-sh*.55);
+      // occlusione ambientale
+      vec3 t1=normalize(cross(n,abs(n.y)<.9?vec3(0,1,0):vec3(1,0,0)));
+      float ao=0.;
+      for(int i=1;i<=4;i++){ float r=float(i)*.022, w=1./float(i);
+        ao+=occ(p+n*r)*w + .5*occ(p+normalize(n+t1*.8)*r)*w + .5*occ(p+normalize(n-t1*.8)*r)*w; }
+      ao=1.-clamp(ao*.42,0.,.85);
+      // spessore → traslucenza (orecchie, dita, naso si illuminano)
+      float th=0.; for(int i=1;i<=6;i++) th+=smoothstep(uIso*.6,uIso*1.2,S(p-n*float(i)*.014));
+      float thin=exp(-th*.55);
+      float fres=pow(1.-max(dot(n,V),0.),3.);
+      float trans=pow(max(dot(rd,Rl),0.),2.)*thin;
+      float spec=pow(max(dot(n,normalize(L+V)),0.),36.)*.22*vis;
+      vec3 amb=mix(uAmbBot,uAmbTop,n.y*.5+.5)*ao;
+      vec3 col=uAlb*(uKeyC*dif*vis + uSss*(wrp-dif)*.55*ao + amb + uSss*uKeyC*thin*dif*.25)
+             + uRimC*fres*.55*ao + uSss*uRimC*trans*1.6 + uKeyC*spec;
+      col*=mix(1.,.45,smoothstep(-.2,.6,dot(p,rd)));
+      outColor=vec4(outc(col+hz),1.);
+    }`
+});
+const SIZE = 1.1;
+const pivot = new THREE.Group(), tilt = new THREE.Group(), spin = new THREE.Group();
+const vol = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), volMat);
+scene.add(pivot); pivot.add(tilt); tilt.add(spin); spin.add(vol);
+vol.scale.setScalar(SIZE);
+
+/* ---------- tinte e luci ---------- */
+const PAL = [
+  { n: 'Lilla e acqua', key: [.98, .72, 1.12], rim: [.3, .98, .86], alb: [.80, .70, .70], top: [.15, .10, .23], bot: [.03, .17, .16], sss: [1, .55, .78] },
+  { n: 'Perla', key: [1.05, 1, 1.05], rim: [.55, .86, .96], alb: [.92, .9, .92], top: [.2, .2, .25], bot: [.09, .13, .15], sss: [1, .72, .8] },
+  { n: 'Ambra classica', key: [1.25, .92, .6], rim: [.95, .6, .35], alb: [.96, .76, .56], top: [.18, .1, .06], bot: [.08, .05, .03], sss: [1, .45, .2] }
+];
+const LIGHTS = [
+  { n: 'Luce alto sinistra', d: new V3(-.55, .65, .55) }, { n: 'Luce alto destra', d: new V3(.6, .5, .6) },
+  { n: 'Luce zenitale', d: new V3(0, .95, .3) }, { n: 'Controluce', d: new V3(-.3, .25, -.9) }
+];
+const CLIPS = [
+  { n: 'Nessun taglio', v: [0, 0, 1, 9] }, { n: 'Taglio posteriore', v: [0, 0, -1, .1] },
+  { n: 'Taglio obliquo', v: [.581, 0, .814, .215] }, { n: 'Sezione sagittale', v: [1, 0, 0, 0] }
+];
+const st = { pal: 0, li: 0, clip: 0, orient: 0, dist: 1.35, auto: false, head: true, vr: false, stereo: false, xr: null };
+const ORIENT = [[0, 0, 0], [Math.PI / 2, 0, 0], [-Math.PI / 2, 0, 0], [0, 0, Math.PI / 2], [Math.PI, 0, 0], [0, Math.PI, 0]];
+$('pal').innerHTML = PAL.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
+$('light').innerHTML = LIGHTS.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
+$('clip').innerHTML = CLIPS.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
+
+function setPal(i) { st.pal = (i + PAL.length) % PAL.length; const p = PAL[st.pal];
+  U.uKeyC.value.fromArray(p.key); U.uRimC.value.fromArray(p.rim); U.uAlb.value.fromArray(p.alb);
+  U.uAmbTop.value.fromArray(p.top); U.uAmbBot.value.fromArray(p.bot); U.uSss.value.fromArray(p.sss);
+  $('pal').value = st.pal; refreshBtns(); }
+function setLight(i) { st.li = (i + LIGHTS.length) % LIGHTS.length; $('light').value = st.li; refreshBtns(); }
+function setClip(i) { st.clip = (i + CLIPS.length) % CLIPS.length; U.uClip.value.fromArray(CLIPS[st.clip].v); $('clip').value = st.clip; refreshBtns(); }
+function setDist(d) { st.dist = THREE.MathUtils.clamp(d, .8, 3); $('dist').value = st.dist; }
+function setAuto(v) { st.auto = v; $('bAuto').classList.toggle('on', v); refreshBtns(); }
+function setHead(v) { st.head = v; $('bHead').classList.toggle('on', v); $('bHead').textContent = 'Testa: ' + (v ? 'on' : 'off'); refreshBtns(); }
+
+/* ---------- volume sintetico (feto, stile HDlive) ---------- */
+const R = 32, NG = new Float32Array(R * R * R).map(() => Math.random());
+function nz(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), fx = x - xi, fy = y - yi, fz = z - zi;
+  const w = v => ((v % R) + R) % R, I = (a, b, c) => NG[w(a) + R * (w(b) + R * w(c))];
+  const l = (a, b, t) => a + (b - a) * t;
+  return l(l(l(I(xi, yi, zi), I(xi + 1, yi, zi), fx), l(I(xi, yi + 1, zi), I(xi + 1, yi + 1, zi), fx), fy),
+           l(l(I(xi, yi, zi + 1), I(xi + 1, yi, zi + 1), fx), l(I(xi, yi + 1, zi + 1), I(xi + 1, yi + 1, zi + 1), fx), fy), fz);
+}
+function ell(x, y, z, cx, cy, cz, rx, ry, rz) {
+  const X = (x - cx) / rx, Y = (y - cy) / ry, Z = (z - cz) / rz;
+  const k0 = Math.sqrt(X * X + Y * Y + Z * Z), k1 = Math.sqrt(X * X / (rx * rx) + Y * Y / (ry * ry) + Z * Z / (rz * rz));
+  return k1 > 1e-6 ? k0 * (k0 - 1) / k1 : -Math.min(rx, ry, rz);
+}
+function cap(x, y, z, ax, ay, az, bx, by, bz, r) {
+  const px = x - ax, py = y - ay, pz = z - az, dx = bx - ax, dy = by - ay, dz = bz - az;
+  const h = Math.max(0, Math.min(1, (px * dx + py * dy + pz * dz) / (dx * dx + dy * dy + dz * dz)));
+  const qx = px - dx * h, qy = py - dy * h, qz = pz - dz * h; return Math.sqrt(qx * qx + qy * qy + qz * qz) - r;
+}
+const smin = (a, b, k) => { const h = Math.max(0, Math.min(1, .5 + .5 * (b - a) / k)); return b + (a - b) * h - k * h * (1 - h); };
+const smax = (a, b, k) => -smin(-a, -b, k);
+function fetus(x, y, z) {
+  const head = ell(x, y, z, 0, .2, -.05, .40, .43, .40), body = ell(x, y, z, 0, -.78, -.2, .42, .40, .40);
+  let d = Math.min(head, body);
+  if (d > .35) return d;
+  d = smin(head, ell(x, y, z, 0, .36, .1, .30, .24, .26), .08);
+  d = smin(d, ell(x, y, z, .16, .03, .19, .15, .14, .14), .06);
+  d = smin(d, ell(x, y, z, -.16, .03, .19, .15, .14, .14), .06);
+  d = smin(d, ell(x, y, z, 0, .10, .36, .05, .075, .06), .04);
+  d = smin(d, ell(x, y, z, 0, -.14, .22, .12, .09, .11), .06);
+  d = smin(d, ell(x, y, z, 0, -.015, .325, .075, .026, .035), .02);
+  d = smin(d, ell(x, y, z, 0, -.065, .31, .065, .026, .035), .02);
+  d = smax(d, -ell(x, y, z, 0, -.042, .35, .06, .007, .05), .008);
+  for (const s of [-1, 1]) {
+    d = smax(d, -ell(x, y, z, s * .13, .23, .36, .07, .045, .06), .035);
+    d = smin(d, ell(x, y, z, s * .13, .22, .315, .058, .034, .04), .02);
+    d = smax(d, -ell(x, y, z, s * .13, .215, .352, .05, .004, .03), .006);
+    d = smin(d, ell(x, y, z, s * .39, .15, -.08, .045, .10, .07), .03);
+  }
+  d = smin(d, cap(x, y, z, 0, -.12, -.1, 0, -.48, -.16, .17), .08);
+  d = smin(d, body, .1);
+  d = smin(d, cap(x, y, z, .32, -.52, -.1, .40, -.52, .25, .075), .05);
+  d = smin(d, cap(x, y, z, .40, -.52, .25, .29, -.12, .38, .06), .03);
+  d = smin(d, ell(x, y, z, .27, -.02, .40, .07, .085, .03), .03);
+  for (let f = 0; f < 4; f++) { const fx = .225 + f * .03;
+    d = smin(d, cap(x, y, z, fx, .04, .40, fx - .01 + f * .004, .15 + (f === 1 || f === 2 ? .02 : 0), .39, .016), .012); }
+  d = smin(d, cap(x, y, z, .21, -.04, .41, .16, .03, .42, .018), .012);
+  return d;
+}
+async function genDemo(N, prog) {
+  const data = new Uint8Array(N * N * N), s = 2 / (N - 1);
+  for (let k = 0; k < N; k++) {
+    const z = -1 + k * s;
+    for (let j = 0; j < N; j++) {
+      const y = -1 + j * s;
+      for (let i = 0; i < N; i++) {
+        const x = -1 + i * s;
+        let D = fetus(x, y, z);
+        if (Math.abs(D) < .1) D += (nz(x * 9 + 3, y * 9, z * 9) - .5) * .014;
+        let v = Math.max(0, Math.min(1, .5 - D / .05));
+        if (v > 0) v *= .94 + .12 * nz(x * 22, y * 22 + 5, z * 22);
+        const f = nz(x * 15 + 7, y * 15, z * 15 + 2);
+        if (f > .72) v = Math.max(v, (f - .72) * .9);
+        const ed = Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
+        v *= Math.min(1, Math.max(0, (1 - ed) / .16));
+        data[i + N * (j + N * k)] = v * 255;
+      }
+    }
+    if (k % 4 === 0) { prog(k / N); await new Promise(r => setTimeout(r, 0)); }
+  }
+  return data;
+}
+function blur3(src, nx, ny, nz_) {
+  let a = src, b = new Uint8Array(src.length);
+  const strides = [1, nx, nx * ny], dims = [nx, ny, nz_];
+  for (let ax = 0; ax < 3; ax++) {
+    const sd = strides[ax], dm = dims[ax];
+    for (let i = 0; i < a.length; i++) {
+      const c = Math.floor(i / sd) % dm;
+      const l = c > 0 ? a[i - sd] : a[i], r = c < dm - 1 ? a[i + sd] : a[i];
+      b[i] = (l + 2 * a[i] + r) >> 2;
+    }
+    [a, b] = [b, a];
+  }
+  return a;
+}
+let tex = null;
+function setVolume(data, nx, ny, nz_, sp = [1, 1, 1]) {
+  if (tex) tex.dispose();
+  tex = new THREE.Data3DTexture(data, nx, ny, nz_);
+  tex.format = THREE.RedFormat; tex.type = THREE.UnsignedByteType;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.unpackAlignment = 1; tex.needsUpdate = true;
+  U.uVol.value = tex; U.uTexel.value.set(1 / nx, 1 / ny, 1 / nz_);
+  const ex = [nx * sp[0], ny * sp[1], nz_ * sp[2]], m = Math.max(...ex);
+  vol.scale.set(ex[0] / m, ex[1] / m, ex[2] / m).multiplyScalar(SIZE);
+}
+async function loadDemo() {
+  $('load').classList.remove('hide');
+  const N = matchMedia('(pointer:coarse)').matches ? 100 : 120;
+  const d = await genDemo(N, p => { $('pct').textContent = Math.round(p * 100) + '%'; });
+  setVolume(blur3(d, N, N, N), N, N, N);
+  st.orient = 0; vol.rotation.set(0, 0, 0);
+  U.uIso.value = .38; $('iso').value = .38;
+  $('load').classList.add('hide');
+}
+
+/* ---------- caricamento NRRD / RAW ---------- */
+async function loadFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let nx, ny, nz_, sp = [1, 1, 1], vals;
+  if (/\.(raw|bin)$/i.test(file.name)) {
+    const n = Math.round(Math.cbrt(buf.length));
+    if (n * n * n !== buf.length) throw new Error('RAW non cubico: usa NRRD per indicare le dimensioni');
+    nx = ny = nz_ = n; vals = buf;
+  } else {
+    let he = null;
+    for (let i = 0; i < Math.min(buf.length - 3, 65536); i++) {
+      if (buf[i] === 10 && buf[i + 1] === 10) { he = [i, i + 2]; break; }
+      if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) { he = [i, i + 4]; break; }
+    }
+    if (!he) throw new Error('Intestazione NRRD non trovata (file .nhdr staccati non supportati)');
+    const f = {};
+    new TextDecoder().decode(buf.subarray(0, he[0])).split(/\r?\n/).forEach(l => {
+      const m = l.match(/^([^:#]+):=?\s*(.*)$/); if (m) f[m[1].trim().toLowerCase()] = m[2].trim(); });
+    if (f['data file']) throw new Error('NRRD con dati in file separato: salva come .nrrd unico');
+    let sz = f.sizes.split(/\s+/).map(Number);
+    if (sz.length === 4) throw new Error('Volume multicanale non supportato');
+    [nx, ny, nz_] = sz;
+    if (f.spacings) sp = f.spacings.split(/\s+/).map(Number);
+    else if (f['space directions']) {
+      const vs = f['space directions'].match(/\(([^)]+)\)/g);
+      if (vs && vs.length >= 3) sp = vs.slice(-3).map(s => Math.hypot(...s.slice(1, -1).split(',').map(Number)));
+    }
+    let raw = buf.subarray(he[1]);
+    const enc = (f.encoding || 'raw').toLowerCase();
+    if (enc === 'gzip' || enc === 'gz') {
+      const ds = new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'));
+      raw = new Uint8Array(await new Response(ds).arrayBuffer());
+    } else if (enc !== 'raw') throw new Error('Codifica NRRD non supportata: ' + enc);
+    const T = (f.type || 'uchar').toLowerCase(), le = (f.endian || 'little') === 'little', n = nx * ny * nz_;
+    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), out = new Float32Array(n);
+    let get;
+    if (/^(uchar|unsigned char|uint8|uint8_t)$/.test(T)) get = i => raw[i];
+    else if (/^(signed char|char|int8|int8_t)$/.test(T)) get = i => dv.getInt8(i);
+    else if (/(ushort|unsigned short|uint16)/.test(T)) get = i => dv.getUint16(i * 2, le);
+    else if (/(short|int16)/.test(T)) get = i => dv.getInt16(i * 2, le);
+    else if (/double/.test(T)) get = i => dv.getFloat64(i * 8, le);
+    else if (/float/.test(T)) get = i => dv.getFloat32(i * 4, le);
+    else if (/(uint|unsigned int|uint32)/.test(T)) get = i => dv.getUint32(i * 4, le);
+    else if (/int/.test(T)) get = i => dv.getInt32(i * 4, le);
+    else throw new Error('Tipo NRRD non supportato: ' + T);
+    for (let i = 0; i < n; i++) out[i] = get(i);
+    const smp = []; for (let i = 0; i < 20000; i++) smp.push(out[Math.floor(Math.random() * n)]);
+    smp.sort((a, b) => a - b);
+    const lo = smp[Math.floor(smp.length * .01)], hi = smp[Math.floor(smp.length * .997)] || 1;
+    vals = new Uint8Array(n);
+    for (let i = 0; i < n; i++) vals[i] = Math.max(0, Math.min(255, (out[i] - lo) / (hi - lo + 1e-9) * 255));
+  }
+  setVolume(blur3(vals, nx, ny, nz_), nx, ny, nz_, sp);
+  st.orient = 0; vol.rotation.set(0, 0, 0);
+  status(`Caricato ${file.name} · ${nx}×${ny}×${nz_} · regola la soglia per isolare la superficie`);
+}
+
+/* ---------- testa: giroscopio, WebXR o trascinamento ---------- */
+const head = { raw: new THREE.Quaternion(), has: false, off: 0, dragYaw: 0, dragPitch: 0, last: 0 };
+const zee = new V3(0, 0, 1), eul = new THREE.Euler(), q0 = new THREE.Quaternion(), q1 = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
+const deg = THREE.MathUtils.degToRad;
+const screenAngle = () => deg((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0);
+function onOri(e) {
+  if (e.alpha == null && e.beta == null) return;
+  eul.set(deg(e.beta || 0), deg(e.alpha || 0), -deg(e.gamma || 0), 'YXZ');
+  head.raw.setFromEuler(eul).multiply(q1).multiply(q0.setFromAxisAngle(zee, -screenAngle()));
+  if (!head.has) { head.has = true; recenter(); }
+  head.last = performance.now();
+}
+addEventListener('deviceorientation', onOri, true);
+async function askMotion() {
+  try { if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) await DeviceOrientationEvent.requestPermission(); } catch (e) {}
+}
+const yawOf = q => { const f = new V3(0, 0, -1).applyQuaternion(q); return Math.atan2(-f.x, -f.z); };
+function recenter() {
+  if (head.has) { head.off = yawOf(head.raw); head.dragYaw = 0; } else { head.dragYaw = 0; head.dragPitch = 0; }
+  anchorYaw = 0; objYaw = 0; prevYaw = null;
+}
+const qT = new THREE.Quaternion(), qY = new THREE.Quaternion(), Y = new V3(0, 1, 0);
+function updateHead() {
+  if (renderer.xr.isPresenting) return;
+  if (head.has) qT.copy(qY.setFromAxisAngle(Y, -head.off + head.dragYaw)).multiply(head.raw);
+  else qT.setFromEuler(eul.set(head.dragPitch, head.dragYaw, 0, 'YXZ'));
+  camera.quaternion.slerp(qT, .6);
+}
+
+/* ---------- menu a sguardo (gaze) ---------- */
+const menu = new THREE.Group(); scene.add(menu);
+const btns = [];
+function rr(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+function drawBtn(b) {
+  const g = b.ctx, W = 512, H = 160; g.clearRect(0, 0, W, H);
+  rr(g, 6, 6, W - 12, H - 12, 70);
+  g.fillStyle = b.hover ? 'rgba(62,40,82,.94)' : 'rgba(28,16,36,.84)'; g.fill();
+  g.lineWidth = 5; g.strokeStyle = b.hover ? '#7fe3d3' : 'rgba(201,167,255,.6)'; g.stroke();
+  g.fillStyle = '#f3ecfa'; g.font = '500 50px "Inter Tight", Inter, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(b.label(), W / 2, H / 2 + 2); b.tex.needsUpdate = true;
+}
+function makeBtn(label, act, yaw, pitch) {
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 160;
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(.33, .103), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, depthWrite: false }));
+  m.renderOrder = 20; const D = 1.7;
+  m.position.set(-Math.sin(yaw) * Math.cos(pitch) * D, Math.sin(pitch) * D, -Math.cos(yaw) * Math.cos(pitch) * D);
+  m.lookAt(0, 0, 0);
+  const b = { mesh: m, ctx: cv.getContext('2d'), tex: t, label, act, hover: false };
+  m.userData.b = b; btns.push(b); menu.add(m); drawBtn(b); return b;
+}
+function refreshBtns() { btns.forEach(drawBtn); }
+const r1 = -.5, r2 = -.72;
+makeBtn(() => 'Auto-rot. ' + (st.auto ? 'on' : 'off'), () => setAuto(!st.auto), .52, r1);
+makeBtn(() => 'Avvicina', () => setDist(st.dist - .25), .26, r1);
+makeBtn(() => 'Allontana', () => setDist(st.dist + .25), 0, r1);
+makeBtn(() => CLIPS[st.clip].n, () => setClip(st.clip + 1), -.26, r1);
+makeBtn(() => LIGHTS[st.li].n.replace('Luce ', 'Luce: '), () => setLight(st.li + 1), -.52, r1);
+makeBtn(() => PAL[st.pal].n, () => setPal(st.pal + 1), .42, r2);
+makeBtn(() => 'Testa: ' + (st.head ? 'on' : 'off'), () => setHead(!st.head), .14, r2);
+makeBtn(() => 'Ricentra', () => recenter(), -.14, r2);
+makeBtn(() => 'Esci', () => exitVR(), -.42, r2);
+// suggerimento iniziale in VR
+const hintCv = document.createElement('canvas'); hintCv.width = 1024; hintCv.height = 120;
+{ const g = hintCv.getContext('2d'); g.fillStyle = 'rgba(241,234,248,.85)'; g.font = '300 44px "Inter Tight", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('Gira la testa per ruotare il volume · guarda in basso per il menu', 512, 60); }
+const hintTex = new THREE.CanvasTexture(hintCv); hintTex.colorSpace = THREE.SRGBColorSpace;
+const hint = new THREE.Mesh(new THREE.PlaneGeometry(1.1, .13), new THREE.MeshBasicMaterial({ map: hintTex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 }));
+hint.renderOrder = 21; hint.position.set(0, -.62, -1.7); hint.lookAt(0, 0, 0); menu.add(hint);
+let hintUntil = 0;
+// mirino con anello di caricamento
+const retMat = new THREE.ShaderMaterial({
+  transparent: true, depthTest: false, depthWrite: false, uniforms: { uP: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `uniform float uP; varying vec2 vUv;
+    void main(){ vec2 u=vUv*2.-1.; float r=length(u); float a=atan(u.x,u.y)/6.2831853+.5;
+      float dc=smoothstep(.22,.14,r);
+      float base=smoothstep(.05,0.,abs(r-.78)-.02)*.35;
+      float ring=smoothstep(.06,0.,abs(r-.78)-.07)*step(a,uP)*step(.001,uP);
+      vec3 c=mix(vec3(.96,.93,1.),vec3(.5,.95,.88),ring);
+      gl_FragColor=vec4(c,max(max(dc,ring),base)*.95); }`
+});
+const reticle = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), retMat);
+reticle.renderOrder = 30; camera.add(reticle);
+const ray = new THREE.Raycaster(), center = new THREE.Vector2();
+let gazed = null, dwell = 0, fired = false; const DWELL = 1.1;
+
+function onTap() {
+  if (gazed) { gazed.act(); refreshBtns(); dwell = 0; fired = true; return; }
+  setHead(!st.head);
+}
+
+/* ---------- modalità VR (Cardboard / WebXR) ---------- */
+function setStereo(v) {
+  st.stereo = v; $('bStereo').textContent = 'Stereo: ' + (v ? 'on' : 'off'); $('bStereo').classList.toggle('on', v);
+  $('mid').classList.toggle('hide', !v); checkPortrait();
+}
+async function enterCardboard() {
+  await askMotion();
+  try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) {}
+  try { await screen.orientation.lock('landscape'); } catch (e) {}
+  st.vr = true; document.body.classList.add('vr'); $('bExit').classList.remove('hide');
+  setStereo(true); recenter(); hintUntil = performance.now() + 7000;
+  setTimeout(() => { if (!head.has) status('Giroscopio non disponibile qui: trascina per simulare la testa, tocca per selezionare'); }, 1500);
+}
+function exitVR() {
+  if (st.xr) { st.xr.end(); return; }
+  st.vr = false; document.body.classList.remove('vr'); $('bExit').classList.add('hide'); setStereo(false);
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+  try { screen.orientation.unlock(); } catch (e) {}
+}
+function checkPortrait() { $('portrait').classList.toggle('hide', !(st.vr && st.stereo && !st.xr && innerHeight > innerWidth)); }
+if (navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(ok => { if (ok) $('bXR').classList.remove('hide'); }).catch(() => {});
+$('bXR').onclick = async () => {
+  try {
+    const s = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+    s.addEventListener('select', onTap);
+    s.addEventListener('end', () => { st.xr = null; st.vr = false; document.body.classList.remove('vr'); });
+    await renderer.xr.setSession(s); st.xr = s; st.vr = true; document.body.classList.add('vr');
+    recenter(); hintUntil = performance.now() + 7000;
+  } catch (e) { status('WebXR non avviabile: ' + e.message); }
+};
+
+/* ---------- controlli HTML ---------- */
+$('bVR').onclick = enterCardboard;
+$('bExit').onclick = exitVR;
+$('bStereo').onclick = () => setStereo(!st.stereo);
+$('bAuto').onclick = () => setAuto(!st.auto);
+$('bHead').onclick = () => setHead(!st.head);
+$('bDemo').onclick = () => loadDemo();
+$('bOrient').onclick = () => { st.orient = (st.orient + 1) % ORIENT.length; vol.rotation.set(...ORIENT[st.orient]); };
+$('iso').oninput = e => { U.uIso.value = +e.target.value; };
+$('expo').oninput = e => { U.uExpo.value = +e.target.value; };
+$('dist').oninput = e => { st.dist = +e.target.value; };
+$('pal').onchange = e => setPal(+e.target.value);
+$('light').onchange = e => setLight(+e.target.value);
+$('clip').onchange = e => setClip(+e.target.value);
+$('qual').onchange = e => setQual(e.target.value);
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  status('Carico ' + f.name + '…');
+  try { await loadFile(f); } catch (err) { status('Errore: ' + err.message); }
+  e.target.value = '';
+};
+let pd = null;
+canvas.addEventListener('pointerdown', e => { pd = { x: e.clientX, y: e.clientY, moved: false }; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} });
+canvas.addEventListener('pointermove', e => {
+  if (!pd) return;
+  const dx = e.clientX - pd.x, dy = e.clientY - pd.y;
+  if (Math.hypot(dx, dy) > 6) pd.moved = true;
+  if (pd.moved) {
+    head.dragYaw += dx * .005;
+    head.dragPitch = THREE.MathUtils.clamp(head.dragPitch + dy * .005, -1.3, 1.3);
+    pd.x = e.clientX; pd.y = e.clientY;
+  }
+});
+canvas.addEventListener('pointerup', () => {
+  if (pd && !pd.moved) { if (st.vr) onTap(); else $('ui').classList.toggle('off'); }
+  pd = null;
+});
+canvas.addEventListener('wheel', e => { e.preventDefault(); setDist(st.dist + e.deltaY * .002); }, { passive: false });
+addEventListener('keydown', e => { if (e.key === 'Escape' && st.vr) exitVR(); if (e.key === ' ' && st.vr) onTap(); });
+
+/* ---------- qualità adattiva ---------- */
+const coarse = matchMedia('(pointer:coarse)').matches;
+const baseDPR = Math.min(devicePixelRatio || 1, 2);
+let qual = 'auto', scale = coarse ? .55 : .9;
+function setQual(q) {
+  qual = q;
+  const Q = { auto: [160, scale], alta: [240, 1], media: [160, .7], bassa: [100, .45] }[q];
+  U.uSteps.value = Q[0]; scale = Q[1]; applySize();
+}
+function applySize() { renderer.setPixelRatio(baseDPR * scale); renderer.setSize(innerWidth, innerHeight, false); }
+addEventListener('resize', () => { applySize(); checkPortrait(); });
+applySize();
+
+/* ---------- ciclo principale ---------- */
+let anchorYaw = 0, objYaw = 0, objPitch = 0, prevYaw = null;
+const GAIN = 2.4;
+const clock = new THREE.Clock();
+const camPos = new V3(), camQ = new THREE.Quaternion(), fwd = new V3(), invQ = new THREE.Quaternion();
+let frames = 0, acc = 0, statT = 0;
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+
+function frame() {
+  const dt = Math.min(clock.getDelta(), .1);
+  updateHead();
+  camera.updateMatrixWorld();
+  camera.getWorldPosition(camPos); camera.getWorldQuaternion(camQ);
+  bg.position.copy(camPos);
+  fwd.set(0, 0, -1).applyQuaternion(camQ);
+  const yaw = Math.atan2(-fwd.x, -fwd.z), pitch = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
+  const menuOn = st.vr && pitch < -.3;
+
+  // la rotazione della testa guida il volume (come la demo "Exhibit" di Cardboard)
+  if (prevYaw !== null && st.head && !menuOn) objYaw += wrap(yaw - prevYaw) * GAIN;
+  prevYaw = yaw;
+  if (st.auto) objYaw += dt * .35;
+  const tp = st.head ? -THREE.MathUtils.clamp(pitch, -.3, .4) * 1.5 : 0;
+  objPitch += (tp - objPitch) * Math.min(1, dt * 6);
+  const off = wrap(yaw - anchorYaw);
+  if (Math.abs(off) > .6) anchorYaw += (off - Math.sign(off) * .6) * Math.min(1, dt * 2.5);
+
+  pivot.position.set(camPos.x - Math.sin(anchorYaw) * st.dist, camPos.y, camPos.z - Math.cos(anchorYaw) * st.dist);
+  pivot.rotation.set(0, anchorYaw, 0); tilt.rotation.set(objPitch, 0, 0); spin.rotation.set(0, objYaw, 0);
+  camera.focus = st.dist;
+
+  // luci legate allo sguardo dell'osservatore, convertite nello spazio del volume
+  pivot.updateMatrixWorld(true);
+  vol.getWorldQuaternion(invQ).invert();
+  U.uL.value.copy(LIGHTS[st.li].d).normalize().applyQuaternion(camQ).applyQuaternion(invQ);
+  U.uR.value.set(.25, .35, -1).normalize().applyQuaternion(camQ).applyQuaternion(invQ);
+
+  // menu e mirino
+  menu.position.copy(camPos); menu.rotation.set(0, anchorYaw, 0);
+  const mo = st.vr ? THREE.MathUtils.smoothstep(-pitch, .22, .4) : 0;
+  menu.visible = mo > .02;
+  btns.forEach(b => { b.mesh.material.opacity = mo; });
+  hint.material.opacity = st.vr ? Math.max(0, Math.min(1, (hintUntil - performance.now()) / 1500)) : 0;
+  reticle.visible = st.vr; reticle.position.set(0, 0, -Math.min(st.dist, 1.6)); reticle.scale.setScalar(.045 * Math.min(st.dist, 1.6));
+  let hit = null;
+  if (menu.visible && mo > .5) {
+    menu.updateMatrixWorld(true);
+    ray.set(camPos, fwd);
+    const h = ray.intersectObjects(btns.map(b => b.mesh), false)[0];
+    hit = h ? h.object.userData.b : null;
+  }
+  if (hit !== gazed) { if (gazed) { gazed.hover = false; drawBtn(gazed); } gazed = hit; dwell = 0; fired = false; if (hit) { hit.hover = true; drawBtn(hit); } }
+  if (gazed && !fired) { dwell += dt; if (dwell >= DWELL) { fired = true; gazed.act(); refreshBtns(); } }
+  retMat.uniforms.uP.value = gazed && !fired ? dwell / DWELL : 0;
+
+  render();
+
+  // qualità adattiva
+  frames++; acc += dt; statT += dt;
+  if (acc > 1) {
+    const ms = acc / frames * 1000;
+    if (qual === 'auto' && !renderer.xr.isPresenting) {
+      const ns = ms > 34 ? scale * .85 : ms < 19 ? scale * 1.07 : scale;
+      const cl = THREE.MathUtils.clamp(ns, .35, 1);
+      if (Math.abs(cl - scale) > .02) { scale = cl; applySize(); }
+    }
+    if (!$('status').textContent.startsWith('Errore') && !$('status').textContent.startsWith('Caricato') || statT > 8) {
+      status(`${head.has ? 'Giroscopio attivo' : 'Trascina per guardarti intorno'} · ${Math.round(1000 / ms)} fps · risoluzione ${Math.round(scale * 100)}%`);
+      if (statT > 8) statT = 0;
+    }
+    frames = 0; acc = 0;
+  }
+}
+function render() {
+  if (renderer.xr.isPresenting) { renderer.render(scene, camera); return; }
+  const w = innerWidth, h = innerHeight;
+  if (st.stereo) {
+    camera.aspect = (w / 2) / h; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+    stereoCam.update(camera);
+    renderer.setScissorTest(true);
+    renderer.setScissor(0, 0, w / 2, h); renderer.setViewport(0, 0, w / 2, h); renderer.render(scene, stereoCam.cameraL);
+    renderer.setScissor(w / 2, 0, w / 2, h); renderer.setViewport(w / 2, 0, w / 2, h); renderer.render(scene, stereoCam.cameraR);
+    renderer.setScissorTest(false);
+  } else {
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    renderer.setViewport(0, 0, w, h); renderer.render(scene, camera);
+  }
+}
+
+setPal(0); setLight(0); setClip(0); setDist(1.35);
+if (document.fonts) document.fonts.ready.then(refreshBtns);
+await loadDemo();
+renderer.setAnimationLoop(frame);
+} catch (err) {
+  $('load').classList.remove('hide');
+  $('load').innerHTML = '<div>Impossibile avviare il rendering<small>' + String(err.message || err) + ' · serve un browser con WebGL2</small></div>';
+}
+</script>
+</body>
+</html>
