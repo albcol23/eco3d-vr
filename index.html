@@ -53,7 +53,7 @@ body.vr .top,body.vr #ui{display:none}
     <button id="bXR" class="hide">WebXR</button>
     <button id="bStereo">Stereo: off</button>
     <button id="bAuto">Auto-rotazione</button>
-    <button id="bHead" class="on">Testa: on</button>
+    <button id="bHead" class="on">Rotazione: on</button>
     <label class="btn" id="lFile">Carica .nrrd<input id="file" type="file" accept=".nrrd,.nhdr,.raw,.bin" hidden></label>
     <button id="bOrient">Orienta volume</button>
     <button id="bDemo">Volume demo</button>
@@ -65,6 +65,7 @@ body.vr .top,body.vr #ui{display:none}
     <select id="pal" aria-label="Tinta"></select>
     <select id="light" aria-label="Posizione luce"></select>
     <select id="clip" aria-label="Taglio"></select>
+    <select id="gain" aria-label="Sensibilità"></select>
     <select id="qual" aria-label="Qualità">
       <option value="auto">Qualità auto</option><option value="alta">Alta</option><option value="media">Media</option><option value="bassa">Bassa</option>
     </select>
@@ -210,10 +211,12 @@ const CLIPS = [
   { n: 'Nessun taglio', v: [0, 0, 1, 9] }, { n: 'Taglio posteriore', v: [0, 0, -1, .1] },
   { n: 'Taglio obliquo', v: [.581, 0, .814, .215] }, { n: 'Sezione sagittale', v: [1, 0, 0, 0] }
 ];
-const st = { pal: 0, li: 0, clip: 0, orient: 0, dist: 1.35, auto: false, head: true, vr: false, stereo: false, xr: null };
+const GAINS = [1, 1.5, 2, 3];
+const st = { gain: 2, menu: false, pal: 0, li: 0, clip: 0, orient: 0, dist: 1.35, auto: false, head: true, vr: false, stereo: false, xr: null };
 const ORIENT = [[0, 0, 0], [Math.PI / 2, 0, 0], [-Math.PI / 2, 0, 0], [0, 0, Math.PI / 2], [Math.PI, 0, 0], [0, Math.PI, 0]];
 $('pal').innerHTML = PAL.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
 $('light').innerHTML = LIGHTS.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
+$('gain').innerHTML = GAINS.map((g, i) => `<option value="${i}">Sensibilità ${g}×</option>`).join('');
 $('clip').innerHTML = CLIPS.map((p, i) => `<option value="${i}">${p.n}</option>`).join('');
 
 function setPal(i) { st.pal = (i + PAL.length) % PAL.length; const p = PAL[st.pal];
@@ -224,7 +227,9 @@ function setLight(i) { st.li = (i + LIGHTS.length) % LIGHTS.length; $('light').v
 function setClip(i) { st.clip = (i + CLIPS.length) % CLIPS.length; U.uClip.value.fromArray(CLIPS[st.clip].v); $('clip').value = st.clip; refreshBtns(); }
 function setDist(d) { st.dist = THREE.MathUtils.clamp(d, .8, 3); $('dist').value = st.dist; }
 function setAuto(v) { st.auto = v; $('bAuto').classList.toggle('on', v); refreshBtns(); }
-function setHead(v) { st.head = v; $('bHead').classList.toggle('on', v); $('bHead').textContent = 'Testa: ' + (v ? 'on' : 'off'); refreshBtns(); }
+function setHead(v) { st.head = v; needRebase = true; $('bHead').classList.toggle('on', v); $('bHead').textContent = 'Rotazione: ' + (v ? 'on' : 'off'); refreshBtns(); }
+function setGain(i) { st.gain = (i + GAINS.length) % GAINS.length; needRebase = true; $('gain').value = st.gain; refreshBtns(); }
+let needRebase = false, needRecenter = true;
 
 /* ---------- volume sintetico (feto, stile HDlive) ---------- */
 const R = 32, NG = new Float32Array(R * R * R).map(() => Math.random());
@@ -398,7 +403,7 @@ function onOri(e) {
   if (e.alpha == null && e.beta == null) return;
   eul.set(deg(e.beta || 0), deg(e.alpha || 0), -deg(e.gamma || 0), 'YXZ');
   head.raw.setFromEuler(eul).multiply(q1).multiply(q0.setFromAxisAngle(zee, -screenAngle()));
-  if (!head.has) { head.has = true; recenter(); }
+  if (!head.has) { head.has = true; head.off = yawOf(head.raw); recenter(); }
   head.last = performance.now();
 }
 addEventListener('deviceorientation', onOri, true);
@@ -406,58 +411,65 @@ async function askMotion() {
   try { if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) await DeviceOrientationEvent.requestPermission(); } catch (e) {}
 }
 const yawOf = q => { const f = new V3(0, 0, -1).applyQuaternion(q); return Math.atan2(-f.x, -f.z); };
-function recenter() {
-  if (head.has) { head.off = yawOf(head.raw); head.dragYaw = 0; } else { head.dragYaw = 0; head.dragPitch = 0; }
-  anchorYaw = 0; objYaw = 0; prevYaw = null;
-}
+function recenter() { needRecenter = true; }
 const qT = new THREE.Quaternion(), qY = new THREE.Quaternion(), Y = new V3(0, 1, 0);
 function updateHead() {
   if (renderer.xr.isPresenting) return;
   if (head.has) qT.copy(qY.setFromAxisAngle(Y, -head.off + head.dragYaw)).multiply(head.raw);
   else qT.setFromEuler(eul.set(head.dragPitch, head.dragYaw, 0, 'YXZ'));
-  camera.quaternion.slerp(qT, .6);
+  camera.quaternion.slerp(qT, .7);
 }
 
-/* ---------- menu a sguardo (gaze) ---------- */
-const menu = new THREE.Group(); scene.add(menu);
+/* ---------- menu: si apre col tasto del visore (tap) ---------- */
+const menu = new THREE.Group(); scene.add(menu); menu.visible = false;
+const MZ = 1.2;
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.16, .6), new THREE.MeshBasicMaterial({ color: 0x120a17, transparent: true, opacity: .78, depthTest: false, depthWrite: false }));
+panel.renderOrder = 19; panel.position.set(0, 0, -MZ - .01); menu.add(panel);
 const btns = [];
 function rr(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
 function drawBtn(b) {
   const g = b.ctx, W = 512, H = 160; g.clearRect(0, 0, W, H);
   rr(g, 6, 6, W - 12, H - 12, 70);
-  g.fillStyle = b.hover ? 'rgba(62,40,82,.94)' : 'rgba(28,16,36,.84)'; g.fill();
+  g.fillStyle = b.hover ? 'rgba(62,40,82,.96)' : 'rgba(34,20,44,.92)'; g.fill();
   g.lineWidth = 5; g.strokeStyle = b.hover ? '#7fe3d3' : 'rgba(201,167,255,.6)'; g.stroke();
   g.fillStyle = '#f3ecfa'; g.font = '500 50px "Inter Tight", Inter, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(b.label(), W / 2, H / 2 + 2); b.tex.needsUpdate = true;
 }
-function makeBtn(label, act, yaw, pitch) {
+function makeBtn(label, act, col, row) {
   const cv = document.createElement('canvas'); cv.width = 512; cv.height = 160;
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(.33, .103), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, depthWrite: false }));
-  m.renderOrder = 20; const D = 1.7;
-  m.position.set(-Math.sin(yaw) * Math.cos(pitch) * D, Math.sin(pitch) * D, -Math.cos(yaw) * Math.cos(pitch) * D);
-  m.lookAt(0, 0, 0);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(.34, .106), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthTest: false, depthWrite: false }));
+  m.renderOrder = 20; m.position.set(col * .37, .21 - row * .14, -MZ);
   const b = { mesh: m, ctx: cv.getContext('2d'), tex: t, label, act, hover: false };
   m.userData.b = b; btns.push(b); menu.add(m); drawBtn(b); return b;
 }
 function refreshBtns() { btns.forEach(drawBtn); }
-const r1 = -.5, r2 = -.72;
-makeBtn(() => 'Auto-rot. ' + (st.auto ? 'on' : 'off'), () => setAuto(!st.auto), .52, r1);
-makeBtn(() => 'Avvicina', () => setDist(st.dist - .25), .26, r1);
-makeBtn(() => 'Allontana', () => setDist(st.dist + .25), 0, r1);
-makeBtn(() => CLIPS[st.clip].n, () => setClip(st.clip + 1), -.26, r1);
-makeBtn(() => LIGHTS[st.li].n.replace('Luce ', 'Luce: '), () => setLight(st.li + 1), -.52, r1);
-makeBtn(() => PAL[st.pal].n, () => setPal(st.pal + 1), .42, r2);
-makeBtn(() => 'Testa: ' + (st.head ? 'on' : 'off'), () => setHead(!st.head), .14, r2);
-makeBtn(() => 'Ricentra', () => recenter(), -.14, r2);
-makeBtn(() => 'Esci', () => exitVR(), -.42, r2);
-// suggerimento iniziale in VR
+makeBtn(() => 'Auto-rot. ' + (st.auto ? 'on' : 'off'), () => setAuto(!st.auto), -1, 0);
+makeBtn(() => 'Avvicina', () => setDist(st.dist - .2), 0, 0);
+makeBtn(() => 'Allontana', () => setDist(st.dist + .2), 1, 0);
+makeBtn(() => CLIPS[st.clip].n, () => setClip(st.clip + 1), -1, 1);
+makeBtn(() => LIGHTS[st.li].n.replace('Luce ', 'Luce: '), () => setLight(st.li + 1), 0, 1);
+makeBtn(() => PAL[st.pal].n, () => setPal(st.pal + 1), 1, 1);
+makeBtn(() => 'Sensibilità ' + GAINS[st.gain] + '×', () => setGain(st.gain + 1), -1, 2);
+makeBtn(() => 'Rotazione ' + (st.head ? 'on' : 'off'), () => setHead(!st.head), 0, 2);
+makeBtn(() => 'Ricentra', () => { recenter(); closeMenu(); }, 1, 2);
+makeBtn(() => 'Chiudi', () => closeMenu(), -.5, 3);
+makeBtn(() => 'Esci dalla VR', () => { closeMenu(); exitVR(); }, .5, 3);
+const eM = new THREE.Euler();
+function openMenu() {
+  menu.position.copy(camPos);
+  eM.setFromQuaternion(camQ, 'YXZ'); eM.z = 0; menu.quaternion.setFromEuler(eM);
+  menu.updateMatrixWorld(true);
+  st.menu = true; menu.visible = true; refreshBtns();
+}
+function closeMenu() { st.menu = false; menu.visible = false; needRebase = true; }
+// suggerimento iniziale in VR (agganciato alla vista)
 const hintCv = document.createElement('canvas'); hintCv.width = 1024; hintCv.height = 120;
-{ const g = hintCv.getContext('2d'); g.fillStyle = 'rgba(241,234,248,.85)'; g.font = '300 44px "Inter Tight", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('Gira la testa per ruotare il volume · guarda in basso per il menu', 512, 60); }
+{ const g = hintCv.getContext('2d'); g.fillStyle = 'rgba(241,234,248,.9)'; g.font = '300 42px "Inter Tight", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('Gira la testa per muoverti attorno · tasto del visore per il menu', 512, 60); }
 const hintTex = new THREE.CanvasTexture(hintCv); hintTex.colorSpace = THREE.SRGBColorSpace;
-const hint = new THREE.Mesh(new THREE.PlaneGeometry(1.1, .13), new THREE.MeshBasicMaterial({ map: hintTex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 }));
-hint.renderOrder = 21; hint.position.set(0, -.62, -1.7); hint.lookAt(0, 0, 0); menu.add(hint);
+const hint = new THREE.Mesh(new THREE.PlaneGeometry(.9, .105), new THREE.MeshBasicMaterial({ map: hintTex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 }));
+hint.renderOrder = 21; hint.position.set(0, -.36, -1.3); camera.add(hint);
 let hintUntil = 0;
 // mirino con anello di caricamento
 const retMat = new THREE.ShaderMaterial({
@@ -473,12 +485,14 @@ const retMat = new THREE.ShaderMaterial({
 });
 const reticle = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), retMat);
 reticle.renderOrder = 30; camera.add(reticle);
-const ray = new THREE.Raycaster(), center = new THREE.Vector2();
-let gazed = null, dwell = 0, fired = false; const DWELL = 1.1;
+const ray = new THREE.Raycaster();
+let gazed = null, dwell = 0, fired = false; const DWELL = 1.2;
 
+// tasto del visore: apre il menu; a menu aperto seleziona il pulsante guardato o chiude
 function onTap() {
+  if (!st.menu) { openMenu(); return; }
   if (gazed) { gazed.act(); refreshBtns(); dwell = 0; fired = true; return; }
-  setHead(!st.head);
+  closeMenu();
 }
 
 /* ---------- modalità VR (Cardboard / WebXR) ---------- */
@@ -496,7 +510,7 @@ async function enterCardboard() {
 }
 function exitVR() {
   if (st.xr) { st.xr.end(); return; }
-  st.vr = false; document.body.classList.remove('vr'); $('bExit').classList.add('hide'); setStereo(false);
+  closeMenu(); st.vr = false; document.body.classList.remove('vr'); $('bExit').classList.add('hide'); setStereo(false);
   try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
   try { screen.orientation.unlock(); } catch (e) {}
 }
@@ -526,6 +540,7 @@ $('dist').oninput = e => { st.dist = +e.target.value; };
 $('pal').onchange = e => setPal(+e.target.value);
 $('light').onchange = e => setLight(+e.target.value);
 $('clip').onchange = e => setClip(+e.target.value);
+$('gain').onchange = e => setGain(+e.target.value);
 $('qual').onchange = e => setQual(e.target.value);
 $('file').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -550,7 +565,7 @@ canvas.addEventListener('pointerup', () => {
   pd = null;
 });
 canvas.addEventListener('wheel', e => { e.preventDefault(); setDist(st.dist + e.deltaY * .002); }, { passive: false });
-addEventListener('keydown', e => { if (e.key === 'Escape' && st.vr) exitVR(); if (e.key === ' ' && st.vr) onTap(); });
+addEventListener('keydown', e => { if (e.key === 'Escape' && st.vr) { if (st.menu) closeMenu(); else exitVR(); } if (e.key === ' ' && st.vr) onTap(); });
 
 /* ---------- qualità adattiva ---------- */
 const coarse = matchMedia('(pointer:coarse)').matches;
@@ -566,10 +581,13 @@ addEventListener('resize', () => { applySize(); checkPortrait(); });
 applySize();
 
 /* ---------- ciclo principale ---------- */
-let anchorYaw = 0, objYaw = 0, objPitch = 0, prevYaw = null;
-const GAIN = 2.4;
+// Orbita: la vista segue la testa, il volume resta sempre al centro dello sguardo
+// e ruota in senso opposto (amplificato), come se la camera gli girasse attorno.
 const clock = new THREE.Clock();
 const camPos = new V3(), camQ = new THREE.Quaternion(), fwd = new V3(), invQ = new THREE.Quaternion();
+const qOff = new THREE.Quaternion(), qAmp = new THREE.Quaternion(), qView = new THREE.Quaternion(), qTmp = new THREE.Quaternion();
+const eA = new THREE.Euler();
+let yaw0 = 0, relYaw = 0, prevYaw = null;
 let frames = 0, acc = 0, statT = 0;
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -580,38 +598,37 @@ function frame() {
   camera.getWorldPosition(camPos); camera.getWorldQuaternion(camQ);
   bg.position.copy(camPos);
   fwd.set(0, 0, -1).applyQuaternion(camQ);
-  const yaw = Math.atan2(-fwd.x, -fwd.z), pitch = Math.asin(THREE.MathUtils.clamp(fwd.y, -1, 1));
-  const menuOn = st.vr && pitch < -.3;
+  eA.setFromQuaternion(camQ, 'YXZ');
+  const pitch = eA.x, yaw = eA.y, roll = eA.z;
 
-  // la rotazione della testa guida il volume (come la demo "Exhibit" di Cardboard)
-  if (prevYaw !== null && st.head && !menuOn) objYaw += wrap(yaw - prevYaw) * GAIN;
+  if (needRecenter) { yaw0 = yaw; relYaw = 0; prevYaw = yaw; qOff.identity(); spin.rotation.set(0, 0, 0); needRecenter = false; }
+  if (prevYaw !== null) relYaw += wrap(yaw - prevYaw);
   prevYaw = yaw;
-  if (st.auto) objYaw += dt * .35;
-  const tp = st.head ? -THREE.MathUtils.clamp(pitch, -.3, .4) * 1.5 : 0;
-  objPitch += (tp - objPitch) * Math.min(1, dt * 6);
-  const off = wrap(yaw - anchorYaw);
-  if (Math.abs(off) > .6) anchorYaw += (off - Math.sign(off) * .6) * Math.min(1, dt * 2.5);
+  const G = GAINS[st.gain];
+  qAmp.setFromEuler(eA.set(THREE.MathUtils.clamp(pitch * G, -1.45, 1.45), yaw0 + relYaw * G, roll, 'YXZ'));
+  if (needRebase) { qOff.copy(qView).multiply(qAmp); needRebase = false; }
 
-  pivot.position.set(camPos.x - Math.sin(anchorYaw) * st.dist, camPos.y, camPos.z - Math.cos(anchorYaw) * st.dist);
-  pivot.rotation.set(0, anchorYaw, 0); tilt.rotation.set(objPitch, 0, 0); spin.rotation.set(0, objYaw, 0);
+  if (!st.menu) {
+    if (st.head) qView.copy(qOff).multiply(qTmp.copy(qAmp).invert());
+    pivot.position.copy(fwd).multiplyScalar(st.dist).add(camPos);
+    pivot.quaternion.copy(camQ).multiply(qView);
+  }
+  if (st.auto) spin.rotation.y += dt * .35;
   camera.focus = st.dist;
 
-  // luci legate allo sguardo dell'osservatore, convertite nello spazio del volume
+  // luci legate all'osservatore, convertite nello spazio del volume
   pivot.updateMatrixWorld(true);
   vol.getWorldQuaternion(invQ).invert();
   U.uL.value.copy(LIGHTS[st.li].d).normalize().applyQuaternion(camQ).applyQuaternion(invQ);
   U.uR.value.set(.25, .35, -1).normalize().applyQuaternion(camQ).applyQuaternion(invQ);
 
-  // menu e mirino
-  menu.position.copy(camPos); menu.rotation.set(0, anchorYaw, 0);
-  const mo = st.vr ? THREE.MathUtils.smoothstep(-pitch, .22, .4) : 0;
-  menu.visible = mo > .02;
-  btns.forEach(b => { b.mesh.material.opacity = mo; });
+  // menu, suggerimento e mirino
   hint.material.opacity = st.vr ? Math.max(0, Math.min(1, (hintUntil - performance.now()) / 1500)) : 0;
-  reticle.visible = st.vr; reticle.position.set(0, 0, -Math.min(st.dist, 1.6)); reticle.scale.setScalar(.045 * Math.min(st.dist, 1.6));
+  reticle.visible = st.vr;
+  const rz = st.menu ? MZ : Math.min(st.dist, 1.6);
+  reticle.position.set(0, 0, -rz); reticle.scale.setScalar(.04 * rz);
   let hit = null;
-  if (menu.visible && mo > .5) {
-    menu.updateMatrixWorld(true);
+  if (st.menu) {
     ray.set(camPos, fwd);
     const h = ray.intersectObjects(btns.map(b => b.mesh), false)[0];
     hit = h ? h.object.userData.b : null;
@@ -654,7 +671,7 @@ function render() {
   }
 }
 
-setPal(0); setLight(0); setClip(0); setDist(1.35);
+setPal(0); setLight(0); setClip(0); setDist(1.35); setGain(2);
 if (document.fonts) document.fonts.ready.then(refreshBtns);
 await loadDemo();
 renderer.setAnimationLoop(frame);
